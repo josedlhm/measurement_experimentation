@@ -114,3 +114,32 @@ def depth_mask_to_points_mm(depth_mm: np.ndarray, mask_u8: np.ndarray, fx: float
     x = (xs.astype(np.float32) - cx) * z / fx
     y = (ys.astype(np.float32) - cy) * z / fy
     return np.stack([x, y, z], axis=1)
+
+import numpy as np, cv2
+
+def keep_near_core_depth_mm(pts_mm, depth_mm, mask_u8, erode_px=3, trim=0.1, band_mm=12.0):
+    """
+    Keep only 3D points whose Z is within ±band_mm of a robust 'core' depth.
+    - Core = eroded mask (avoids rim mixed pixels).
+    - Core depth = trimmed mean of 3x3 median-filtered depths.
+    """
+    M = (mask_u8 > 0).astype(np.uint8)
+    if erode_px > 0:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*erode_px+1, 2*erode_px+1))
+        core = cv2.erode(M, k)
+    else:
+        core = M
+
+    core_idx = (core > 0) & np.isfinite(depth_mm) & (depth_mm > 0)
+    if core_idx.sum() < 20:
+        return pts_mm  # not enough support; leave unchanged
+
+    d = depth_mm.astype(np.float32).copy()
+    d[~np.isfinite(d)] = 0
+    d_med = cv2.medianBlur(d, 3)
+    vals = np.sort(d_med[core_idx].astype(np.float64))
+    n = vals.size
+    lo, hi = int(trim*n), int((1.0-trim)*n)
+    z_core = vals[lo:hi].mean() if hi > lo else float(np.median(vals))
+    keep = np.abs(pts_mm[:,2] - z_core) <= band_mm
+    return pts_mm[keep]
